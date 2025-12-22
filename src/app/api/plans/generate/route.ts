@@ -17,6 +17,22 @@ type Body = {
   weekStartISO?: string; // optional override
 };
 
+export async function GET() {
+  const supabase = supabaseServer();
+
+  const { data, error } = await supabase
+    .from("plans")
+    .select("id, company_id, week_start_date, created_at")
+    .order("week_start_date", { ascending: false })
+    .limit(25);
+
+  if (error) {
+    return NextResponse.json({ error: error.message }, { status: 500 });
+  }
+
+  return NextResponse.json({ plans: data ?? [] });
+}
+
 export async function POST(req: NextRequest) {
   const supabase = supabaseServer();
 
