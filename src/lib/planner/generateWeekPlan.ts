@@ -149,7 +149,9 @@ export function generateWeekPlan(inputs: Inputs): GenerationResult {
   );
 
   // --- 2) Assign personas (avoid same persona posting everything) ---
-  const personaPool = shuffle(rng, personas);
+  // If personas is empty, use a default persona
+  const defaultPersona: Persona = { id: "default", company_id: company.id, username: "anon", bio: "No persona available" };
+  const personaPool = personas.length > 0 ? shuffle(rng, personas) : [defaultPersona];
   const postAuthors: Persona[] = [];
   for (let i = 0; i < postsPerWeek; i++) {
     // rotate with mild randomness
@@ -210,7 +212,7 @@ export function generateWeekPlan(inputs: Inputs): GenerationResult {
     // pick commenters (exclude post author to avoid instant self-replies)
     const commenters = shuffle(
       rng,
-      personas.filter((x) => x.username !== post.author_username)
+      (personas.length > 0 ? personas : [defaultPersona]).filter((x) => x.username !== post.author_username)
     );
 
     // thread timing: start 25–120 mins after post, then 6–45 mins between
@@ -218,7 +220,7 @@ export function generateWeekPlan(inputs: Inputs): GenerationResult {
     t = addMinutes(t, 25 + Math.floor(rng() * 95));
 
     // comment #1: neutral or mild counter (sounds real)
-    const c1Author = commenters[0] ?? personas[0];
+    const c1Author = commenters[0] ?? defaultPersona;
     const keywordId = post.keyword_ids[0];
     const kw = keywords.find((k) => k.id === keywordId) ?? keywords[0];
 
@@ -245,7 +247,7 @@ export function generateWeekPlan(inputs: Inputs): GenerationResult {
     }
 
     // one “support” mention by another persona later (subtle)
-    const supportAuthor = commenters[1] ?? commenters[0] ?? personas[0];
+    const supportAuthor = commenters[1] ?? commenters[0] ?? defaultPersona;
     t = addMinutes(t, 10 + Math.floor(rng() * 35));
     comments.push({
       post_temp_index: p,
@@ -260,7 +262,7 @@ export function generateWeekPlan(inputs: Inputs): GenerationResult {
 
     // optional extra comment adds nuance (avoid all praise)
     if (nComments >= 4) {
-      const extraAuthor = commenters[2] ?? supportAuthor;
+      const extraAuthor = commenters[2] ?? supportAuthor ?? defaultPersona;
       t = addMinutes(t, 8 + Math.floor(rng() * 40));
       comments.push({
         post_temp_index: p,

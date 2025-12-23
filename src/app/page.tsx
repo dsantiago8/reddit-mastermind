@@ -205,10 +205,6 @@ export default function DashboardPage() {
           <h1 className="text-3xl font-semibold tracking-tight">
             Reddit Content Planner
           </h1>
-          <p className="text-sm text-neutral-400">
-            Generate a weekly plan (posts + threaded comments) from company info,
-            personas, subreddits, and keyword targets.
-          </p>
         </header>
 
         <section className="rounded-2xl border border-neutral-700 bg-neutral-900 p-5 panel-soft">
@@ -393,76 +389,88 @@ export default function DashboardPage() {
                   <div className="space-y-3">
                     {(() => {
                       const currentPlanId = planDetails.plan?.id ?? selectedPlanId;
-                      return planDetails.posts.filter((p: any) => p.plan_id === currentPlanId).map((post: any, idx: number) => (
-                      <div key={idx} className="rounded-md border border-neutral-800 p-3">
-                        <div className="font-medium">{post.title}</div>
-                        <div className="text-xs text-neutral-400">{post.subreddit} — {post.scheduled_at} {post.author_username ? `— by ${post.author_username}` : null}</div>
-                        <div className="mt-2 text-sm text-neutral-300 whitespace-pre-wrap">{post.body}</div>
+                      return planDetails.posts
+                        .filter((p: any) => p.plan_id === currentPlanId)
+                        .map((post: any, idx: number) => {
+                          const allComments = planDetails.comments ?? [];
+                          const comments = allComments
+                            .filter((c: any) => c.post_id === post.id)
+                            .map((c: any, i: number) => ({ ...c, __idx: i }));
 
-                        {/* Comments for this post (grouped + nested) */}
-                        <div className="mt-3">
-                          <h4 className="font-medium">Comments</h4>
-                          <div className="space-y-2 text-sm text-neutral-300">
-                            {(() => {
-                              const allComments = planDetails.comments ?? [];
-                              const comments = allComments.filter((c: any) => c.post_id === post.id).map((c: any, i: number) => ({ ...c, __idx: i }));
+                          const byId: Record<string, any> = {};
+                          for (const c of comments) {
+                            if (c.id) byId[c.id] = { ...c, children: [] };
+                          }
 
-                              const byId: Record<string, any> = {};
-                              for (const c of comments) {
-                                if (c.id) byId[c.id] = { ...c, children: [] };
-                              }
+                          const originalById: Record<string, any> = {};
+                          for (const c of comments) if (c.id) originalById[c.id] = c;
 
-                              const originalById: Record<string, any> = {};
-                              for (const c of comments) if (c.id) originalById[c.id] = c;
+                          const roots: any[] = [];
+                          for (const c of comments) {
+                            const node = c.id ? byId[c.id] : { ...c, children: [] };
+                            const parentId = c.parent_comment_id;
+                            if (parentId && byId[parentId]) {
+                              byId[parentId].children.push(node);
+                            } else {
+                              roots.push(node);
+                            }
+                          }
 
-                              const roots: any[] = [];
-                              for (const c of comments) {
-                                const node = c.id ? byId[c.id] : { ...c, children: [] };
-                                const parentId = c.parent_comment_id;
-                                if (parentId && byId[parentId]) {
-                                  byId[parentId].children.push(node);
-                                } else {
-                                  roots.push(node);
-                                }
-                              }
+                          const sortRec = (arr: any[]) => {
+                            arr.sort((a, b) => new Date(a.scheduled_at).getTime() - new Date(b.scheduled_at).getTime());
+                            for (const x of arr) if (x.children) sortRec(x.children);
+                          };
 
-                              const sortRec = (arr: any[]) => {
-                                arr.sort((a, b) => new Date(a.scheduled_at).getTime() - new Date(b.scheduled_at).getTime());
-                                for (const x of arr) if (x.children) sortRec(x.children);
-                              };
+                          sortRec(roots);
 
-                              sortRec(roots);
+                          const CommentNode = ({ node, depth = 0 }: { node: any; depth?: number }) => (
+                            <div style={{ marginLeft: depth * 18 }} className="mb-2">
+                              <div className="rounded-md border border-neutral-800 p-2">
+                                <div className="text-xs text-neutral-400">{node.username} — {node.scheduled_at}</div>
 
-                              const CommentNode = ({ node, depth = 0 }: { node: any; depth?: number }) => (
-                                <div style={{ marginLeft: depth * 18 }} className="mb-2">
-                                  <div className="rounded-md border border-neutral-800 p-2">
-                                    <div className="text-xs text-neutral-400">{node.username} — {node.scheduled_at}</div>
-
-                                    {node.parent_comment_id && depth === 0 && originalById[node.parent_comment_id] && (
-                                      <div className="mt-1 mb-2 rounded-sm border border-neutral-800/60 bg-neutral-900 p-2 text-xs text-neutral-400">
-                                        <div className="font-medium text-neutral-300">In reply to</div>
-                                        <div className="mt-1 whitespace-pre-wrap">{originalById[node.parent_comment_id].comment_text}</div>
-                                      </div>
-                                    )}
-
-                                    <div className="mt-1 whitespace-pre-wrap">{node.comment_text}</div>
+                                {node.parent_comment_id && depth === 0 && originalById[node.parent_comment_id] && (
+                                  <div className="mt-1 mb-2 rounded-sm border border-neutral-800/60 bg-neutral-900 p-2 text-xs text-neutral-400">
+                                    <div className="font-medium text-neutral-300">In reply to</div>
+                                    <div className="mt-1 whitespace-pre-wrap">{originalById[node.parent_comment_id].comment_text}</div>
                                   </div>
-                                  {node.children && node.children.length > 0 && (
-                                    <div className="mt-2 space-y-2">
-                                      {node.children.map((ch: any) => (
-                                        <CommentNode key={ch.id ?? ch.__idx} node={ch} depth={depth + 1} />
-                                      ))}
-                                    </div>
-                                  )}
-                                </div>
-                              );
+                                )}
 
-                              return roots.length > 0 ? roots.map((r) => <CommentNode key={r.id ?? r.__idx} node={r} depth={0} />) : <div className="text-sm text-neutral-500">No comments yet.</div>;
-                            })()}
-                          </div>
-                        </div>
-                      </div>
-                    ))})()}
+                                <div className="mt-1 whitespace-pre-wrap">{node.comment_text}</div>
+                              </div>
+                              {node.children && node.children.length > 0 && (
+                                <div className="mt-2 space-y-2">
+                                  {node.children.map((ch: any) => (
+                                    <CommentNode key={ch.id ?? ch.__idx} node={ch} depth={depth + 1} />
+                                  ))}
+                                </div>
+                              )}
+                            </div>
+                          );
+
+                          return (
+                            <div key={idx} className="rounded-md border border-neutral-800 p-3">
+                              <div className="font-medium">{post.title}</div>
+                              <div className="text-xs text-neutral-400">{post.subreddit} — {post.scheduled_at} {post.author_username ? `— by ${post.author_username}` : null}</div>
+                              <div className="mt-2 text-sm text-neutral-300 whitespace-pre-wrap">{post.body}</div>
+                              <div className="mt-3">
+                                <h4 className="font-medium">Comments</h4>
+                                <div className="space-y-2 text-sm text-neutral-300">
+                                  {roots.length > 0 ? roots.map((r) => <CommentNode key={r.id ?? r.__idx} node={r} depth={0} />) : <div className="text-sm text-neutral-500">No comments yet.</div>}
+                                </div>
+                              </div>
+
+                              <div className="mt-3 flex justify-end">
+                                <button
+                                  onClick={() => alert("Publish is not available yet — coming soon.")}
+                                  className="rounded-md px-3 py-1 text-xs bg-amber-600 hover:bg-amber-500 text-white"
+                                >
+                                  Publish
+                                </button>
+                              </div>
+                            </div>
+                          );
+                        });
+                    })()}
                  </div>
                 </div>
               </div>
