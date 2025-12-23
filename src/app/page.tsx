@@ -40,6 +40,7 @@ export default function DashboardPage() {
   const [selectedPlanId, setSelectedPlanId] = useState<string | null>(null);
   const [planDetails, setPlanDetails] = useState<PlanDetails | null>(null);
   const [loadingDetails, setLoadingDetails] = useState(false);
+  const [deletingPlanId, setDeletingPlanId] = useState<string | null>(null);
 
   const thisWeekStart = useMemo(() => startOfWeekMondayISO(new Date()), []);
   const nextWeekStart = useMemo(() => addDays(thisWeekStart, 7), [thisWeekStart]);
@@ -94,18 +95,14 @@ export default function DashboardPage() {
     setError(null);
 
     // send date-only string (YYYY-MM-DD) to match backend expectations
-    const weekStart = (kind === "this" ? thisWeekStart : nextWeekStart)
-      .toISOString()
-      .slice(0, 10);
-
     try {
-      const res = await fetch("/api/plans/generate", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        // If your generate endpoint doesn't need weekStartISO for "this week",
-        // you can still send it—it's fine.
-        body: JSON.stringify({ weekStart }),
-      });
+      if (kind === "this") {
+        const weekStart = thisWeekStart.toISOString().slice(0, 10);
+        const res = await fetch("/api/plans/generate", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ weekStart }),
+        });
 
         const text = await res.text().catch(() => "");
         let json: any = {};
@@ -120,12 +117,79 @@ export default function DashboardPage() {
           throw new Error(msg);
         }
 
-      // Refresh list and open the new plan in-place so replies render immediately
-      await fetchPlans();
-      const planId = json?.planId as string | undefined;
-      if (planId) {
-        // fetch details for the newly created plan and show them inline
-        await fetchPlanDetails(planId);
+        await fetchPlans();
+        const planId = json?.planId as string | undefined;
+        if (planId) await fetchPlanDetails(planId);
+      } else {
+        // kind === "next" : find the next available week (no existing plan)
+        // NOTE: remove small fixed cap so users can keep generating; use a very large
+        // safety limit to avoid infinite loops in extreme edge cases.
+        let candidate = new Date(nextWeekStart);
+        let createdPlanId: string | null = null;
+        let attempts = 0;
+        const SAFETY_LIMIT = 1000; // ~19 years worth of weeks
+
+        while (true) {
+          const weekStart = candidate.toISOString().slice(0, 10);
+
+          const res = await fetch("/api/plans/generate", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ weekStart }),
+          });
+
+          const text = await res.text().catch(() => "");
+          let json: any = {};
+          try {
+            json = text ? JSON.parse(text) : {};
+          } catch {
+            // ignore
+          }
+
+          if (!res.ok) {
+            // Treat 409 as "already exists" (another plan exists for this week).
+            // Advance to the next week in that case instead of failing the whole loop.
+            if (res.status === 409) {
+              candidate.setDate(candidate.getDate() + 7);
+              attempts += 1;
+              if (attempts >= SAFETY_LIMIT) break;
+              continue;
+            }
+
+            const msg = json?.error?.message || json?.error || text || `Generate failed (${res.status})`;
+            throw new Error(msg);
+          }
+
+          // If the API created a new plan it should return a planId in the body.
+          // Older variants of the API returned { success, reused } — support either shape.
+          if (json?.planId) {
+            createdPlanId = json.planId;
+            break;
+          }
+
+          if (json?.success === true && json?.reused === false && json?.planId) {
+            createdPlanId = json.planId;
+            break;
+          }
+
+          // If we get here the API responded OK but didn't return a planId; advance week.
+          candidate.setDate(candidate.getDate() + 7);
+          attempts += 1;
+
+          // Otherwise advance one week and try again
+          candidate.setDate(candidate.getDate() + 7);
+          attempts += 1;
+          if (attempts >= SAFETY_LIMIT) break;
+        }
+
+        if (createdPlanId) {
+          await fetchPlans();
+          await fetchPlanDetails(createdPlanId);
+        } else if (attempts >= SAFETY_LIMIT) {
+          throw new Error(`Tried ${SAFETY_LIMIT} weeks ahead without finding a free week; stopping to avoid runaway loop.`);
+        } else {
+          throw new Error("Could not find an empty week to generate");
+        }
       }
     } catch (e: any) {
       setError(e?.message ?? "Unknown error while generating plan");
@@ -226,35 +290,78 @@ export default function DashboardPage() {
                     <th className="px-4 py-3 font-medium text-neutral-200">
                       Created
                     </th>
+                    <th className="px-4 py-3 font-medium text-neutral-200 text-right">
+                      Actions
+                    </th>
                   </tr>
                 </thead>
                 <tbody>
-                  {plans.map((p) => (
-                    <tr
-                      key={p.id}
-                      className="border-t border-neutral-800 hover:bg-neutral-900/60"
-                    >
-                      <td className="px-4 py-3 font-mono text-neutral-200">
-                        <button
-                          onClick={() => fetchPlanDetails(p.id)}
-                          className="hover:underline text-left w-full"
-                        >
-                          {p.week_start_date}
-                        </button>
-                      </td>
-                      <td className="px-4 py-3 font-mono text-neutral-400">
-                        <button
-                          onClick={() => fetchPlanDetails(p.id)}
-                          className="hover:underline text-left w-full"
-                        >
-                          {p.id}
-                        </button>
-                      </td>
-                      <td className="px-4 py-3 text-neutral-400">
-                        {new Date(p.created_at).toLocaleString()}
-                      </td>
-                    </tr>
-                  ))}
+                  {plans.map((p) => {
+                    const isSelected = p.id === selectedPlanId;
+                    return (
+                      <tr
+                        key={p.id}
+                        className={`border-t border-neutral-800 hover:bg-neutral-900/60 ${isSelected ? "bg-neutral-900 border-l-4 border-l-indigo-500" : ""}`}
+                      >
+                        <td className={isSelected ? "px-4 py-3 font-mono text-neutral-100" : "px-4 py-3 font-mono text-neutral-200"}>
+                          <button
+                            onClick={() => fetchPlanDetails(p.id)}
+                            className="hover:underline text-left w-full cursor-pointer"
+                          >
+                            {p.week_start_date}
+                          </button>
+                        </td>
+                        <td className={isSelected ? "px-4 py-3 font-mono text-neutral-100" : "px-4 py-3 font-mono text-neutral-400"}>
+                          <button
+                            onClick={() => fetchPlanDetails(p.id)}
+                            className="hover:underline text-left w-full cursor-pointer"
+                          >
+                            {p.id}
+                          </button>
+                        </td>
+                        <td className={isSelected ? "px-4 py-3 text-neutral-200" : "px-4 py-3 text-neutral-400"}>
+                          {new Date(p.created_at).toLocaleString()}
+                        </td>
+                        <td className="px-4 py-3 text-right">
+                          <button
+                            onClick={async () => {
+                              // confirm then delete
+                              if (!confirm(`Delete plan ${p.week_start_date} (${p.id})? This will remove posts and comments.`)) return;
+                              setDeletingPlanId(p.id);
+                              setError(null);
+                              try {
+                                const res = await fetch(`/api/plans/${p.id}`, { method: "DELETE" });
+                                const text = await res.text().catch(() => "");
+                                let json: any = {};
+                                try {
+                                  json = text ? JSON.parse(text) : {};
+                                } catch {}
+
+                                if (!res.ok) {
+                                  throw new Error(json?.error || text || `Delete failed (${res.status})`);
+                                }
+
+                                // refresh list and clear details if needed
+                                await fetchPlans();
+                                if (selectedPlanId === p.id) {
+                                  setSelectedPlanId(null);
+                                  setPlanDetails(null);
+                                }
+                              } catch (e: any) {
+                                setError(e?.message ?? "Unknown error while deleting plan");
+                              } finally {
+                                setDeletingPlanId(null);
+                              }
+                            }}
+                            disabled={deletingPlanId === p.id}
+                            className="rounded px-3 py-1 text-xs bg-red-700/80 hover:bg-red-700 disabled:opacity-60"
+                          >
+                            {deletingPlanId === p.id ? "Deleting..." : "Delete"}
+                          </button>
+                        </td>
+                      </tr>
+                    );
+                  })}
                 </tbody>
               </table>
             </div>
@@ -365,10 +472,6 @@ export default function DashboardPage() {
           </section>
         }
 
-        <footer className="text-xs text-neutral-500">
-          Tip: “Generate next week” simulates the cron button you described in
-          the prompt.
-        </footer>
       </div>
     </main>
   );
