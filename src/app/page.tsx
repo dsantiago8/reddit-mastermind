@@ -10,6 +10,11 @@ type PlanRow = {
   created_at: string;
 };
 
+type PlanDetails = {
+  plan: any;
+  posts: Array<any>;
+  comments: Array<any>;
+};
 function startOfWeekMondayISO(date: Date) {
   // Monday as week start
   const d = new Date(date);
@@ -32,6 +37,9 @@ export default function DashboardPage() {
 
   const [busy, setBusy] = useState<null | "this" | "next">(null);
   const [error, setError] = useState<string | null>(null);
+  const [selectedPlanId, setSelectedPlanId] = useState<string | null>(null);
+  const [planDetails, setPlanDetails] = useState<PlanDetails | null>(null);
+  const [loadingDetails, setLoadingDetails] = useState(false);
 
   const thisWeekStart = useMemo(() => startOfWeekMondayISO(new Date()), []);
   const nextWeekStart = useMemo(() => addDays(thisWeekStart, 7), [thisWeekStart]);
@@ -59,14 +67,36 @@ export default function DashboardPage() {
     fetchPlans();
   }, []);
 
+  async function fetchPlanDetails(id: string) {
+    setLoadingDetails(true);
+    setError(null);
+    // mark the selected plan immediately so the UI filters by this id
+    setSelectedPlanId(id);
+    setPlanDetails(null);
+    try {
+      const res = await fetch(`/api/plans/generate/${id}`, { method: "GET" });
+      if (!res.ok) {
+        const text = await res.text();
+        throw new Error(text || `Failed to fetch plan (${res.status})`);
+      }
+      const json = await res.json();
+      setPlanDetails({ plan: json.plan, posts: json.posts ?? [], comments: json.comments ?? [] });
+      setSelectedPlanId(id);
+    } catch (e: any) {
+      setError(e?.message ?? "Unknown error while fetching plan details");
+    } finally {
+      setLoadingDetails(false);
+    }
+  }
+
   async function generatePlan(kind: "this" | "next") {
     setBusy(kind);
     setError(null);
 
-    const weekStartISO =
-      kind === "this"
-        ? thisWeekStart.toISOString()
-        : nextWeekStart.toISOString();
+    // send date-only string (YYYY-MM-DD) to match backend expectations
+    const weekStart = (kind === "this" ? thisWeekStart : nextWeekStart)
+      .toISOString()
+      .slice(0, 10);
 
     try {
       const res = await fetch("/api/plans/generate", {
@@ -74,26 +104,28 @@ export default function DashboardPage() {
         headers: { "Content-Type": "application/json" },
         // If your generate endpoint doesn't need weekStartISO for "this week",
         // you can still send it—it's fine.
-        body: JSON.stringify({ weekStartISO }),
+        body: JSON.stringify({ weekStart }),
       });
 
-      const json = await res.json().catch(() => ({}));
+        const text = await res.text().catch(() => "");
+        let json: any = {};
+        try {
+          json = text ? JSON.parse(text) : {};
+        } catch {
+          // ignore parse error
+        }
 
-      if (!res.ok) {
-        const msg =
-          json?.error?.message ||
-          json?.error ||
-          `Generate failed (${res.status})`;
-        throw new Error(msg);
-      }
+        if (!res.ok) {
+          const msg = json?.error?.message || json?.error || text || `Generate failed (${res.status})`;
+          throw new Error(msg);
+        }
 
-      // Refresh list
+      // Refresh list and open the new plan in-place so replies render immediately
       await fetchPlans();
-
-      // Optional: jump straight to the new plan
       const planId = json?.planId as string | undefined;
       if (planId) {
-        window.location.href = `/plans/${planId}`;
+        // fetch details for the newly created plan and show them inline
+        await fetchPlanDetails(planId);
       }
     } catch (e: any) {
       setError(e?.message ?? "Unknown error while generating plan");
@@ -203,20 +235,20 @@ export default function DashboardPage() {
                       className="border-t border-neutral-800 hover:bg-neutral-900/60"
                     >
                       <td className="px-4 py-3 font-mono text-neutral-200">
-                        <Link
-                          href={`/plans/${p.id}`}
-                          className="hover:underline"
+                        <button
+                          onClick={() => fetchPlanDetails(p.id)}
+                          className="hover:underline text-left w-full"
                         >
                           {p.week_start_date}
-                        </Link>
+                        </button>
                       </td>
                       <td className="px-4 py-3 font-mono text-neutral-400">
-                        <Link
-                          href={`/plans/${p.id}`}
-                          className="hover:underline"
+                        <button
+                          onClick={() => fetchPlanDetails(p.id)}
+                          className="hover:underline text-left w-full"
                         >
                           {p.id}
-                        </Link>
+                        </button>
                       </td>
                       <td className="px-4 py-3 text-neutral-400">
                         {new Date(p.created_at).toLocaleString()}
@@ -228,6 +260,110 @@ export default function DashboardPage() {
             </div>
           )}
         </section>
+
+        {/* Plan details panel */}
+        {selectedPlanId && 
+          <section className="rounded-2xl border border-neutral-800 bg-neutral-950 p-5">
+            <div className="mb-4 flex items-center justify-between">
+              <h2 className="text-lg font-semibold">Plan details</h2>
+              <div className="text-sm text-neutral-400">{loadingDetails ? "Loading…" : ""}</div>
+            </div>
+
+            {error && (
+              <div className="mt-2 rounded-xl border border-red-900/60 bg-red-950/40 p-3 text-sm text-red-200">
+                {error}
+              </div>
+            )}
+
+            {!planDetails && !loadingDetails ? (
+              <div className="text-sm text-neutral-400">No details loaded.</div>
+            ) : planDetails ? (
+              <div className="space-y-4">
+                  {/* Quality removed */}
+
+                <div>
+                  <h3 className="font-medium">Posts</h3>
+                  <div className="space-y-3">
+                    {(() => {
+                      const currentPlanId = planDetails.plan?.id ?? selectedPlanId;
+                      return planDetails.posts.filter((p: any) => p.plan_id === currentPlanId).map((post: any, idx: number) => (
+                      <div key={idx} className="rounded-md border border-neutral-800 p-3">
+                        <div className="font-medium">{post.title}</div>
+                        <div className="text-xs text-neutral-400">{post.subreddit} — {post.scheduled_at} {post.author_username ? `— by ${post.author_username}` : null}</div>
+                        <div className="mt-2 text-sm text-neutral-300 whitespace-pre-wrap">{post.body}</div>
+
+                        {/* Comments for this post (grouped + nested) */}
+                        <div className="mt-3">
+                          <h4 className="font-medium">Comments</h4>
+                          <div className="space-y-2 text-sm text-neutral-300">
+                            {(() => {
+                              const allComments = planDetails.comments ?? [];
+                              const comments = allComments.filter((c: any) => c.post_id === post.id).map((c: any, i: number) => ({ ...c, __idx: i }));
+
+                              const byId: Record<string, any> = {};
+                              for (const c of comments) {
+                                if (c.id) byId[c.id] = { ...c, children: [] };
+                              }
+
+                              const originalById: Record<string, any> = {};
+                              for (const c of comments) if (c.id) originalById[c.id] = c;
+
+                              const roots: any[] = [];
+                              for (const c of comments) {
+                                const node = c.id ? byId[c.id] : { ...c, children: [] };
+                                const parentId = c.parent_comment_id;
+                                if (parentId && byId[parentId]) {
+                                  byId[parentId].children.push(node);
+                                } else {
+                                  roots.push(node);
+                                }
+                              }
+
+                              const sortRec = (arr: any[]) => {
+                                arr.sort((a, b) => new Date(a.scheduled_at).getTime() - new Date(b.scheduled_at).getTime());
+                                for (const x of arr) if (x.children) sortRec(x.children);
+                              };
+
+                              sortRec(roots);
+
+                              const CommentNode = ({ node, depth = 0 }: { node: any; depth?: number }) => (
+                                <div style={{ marginLeft: depth * 18 }} className="mb-2">
+                                  <div className="rounded-md border border-neutral-800 p-2">
+                                    <div className="text-xs text-neutral-400">{node.username} — {node.scheduled_at}</div>
+
+                                    {node.parent_comment_id && depth === 0 && originalById[node.parent_comment_id] && (
+                                      <div className="mt-1 mb-2 rounded-sm border border-neutral-800/60 bg-neutral-900 p-2 text-xs text-neutral-400">
+                                        <div className="font-medium text-neutral-300">In reply to</div>
+                                        <div className="mt-1 whitespace-pre-wrap">{originalById[node.parent_comment_id].comment_text}</div>
+                                      </div>
+                                    )}
+
+                                    <div className="mt-1 whitespace-pre-wrap">{node.comment_text}</div>
+                                  </div>
+                                  {node.children && node.children.length > 0 && (
+                                    <div className="mt-2 space-y-2">
+                                      {node.children.map((ch: any) => (
+                                        <CommentNode key={ch.id ?? ch.__idx} node={ch} depth={depth + 1} />
+                                      ))}
+                                    </div>
+                                  )}
+                                </div>
+                              );
+
+                              return roots.length > 0 ? roots.map((r) => <CommentNode key={r.id ?? r.__idx} node={r} depth={0} />) : <div className="text-sm text-neutral-500">No comments yet.</div>;
+                            })()}
+                          </div>
+                        </div>
+                      </div>
+                    ))})()}
+                 </div>
+                </div>
+              </div>
+            ) : (
+              <div className="text-sm text-neutral-400">Loading…</div>
+            )}
+          </section>
+        }
 
         <footer className="text-xs text-neutral-500">
           Tip: “Generate next week” simulates the cron button you described in

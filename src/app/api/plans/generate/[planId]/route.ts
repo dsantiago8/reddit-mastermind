@@ -1,9 +1,10 @@
 import { NextRequest, NextResponse } from "next/server";
 import { supabaseServer } from "@/lib/supabase/server";
+import { jsonError, logError } from "@/lib/api/utils";
 
-export async function GET(_req: NextRequest, ctx: { params: { planId: string } }) {
+export async function GET(_req: NextRequest, ctx: { params: Promise<{ planId: string }> }) {
   const supabase = supabaseServer();
-  const planId = ctx.params.planId;
+  const { planId } = await ctx.params;
 
   const { data: plan, error: planErr } = await supabase
     .from("plans")
@@ -11,7 +12,9 @@ export async function GET(_req: NextRequest, ctx: { params: { planId: string } }
     .eq("id", planId)
     .single();
 
-  if (planErr) return NextResponse.json({ error: planErr.message }, { status: 500 });
+  if (planErr) {
+    return jsonError("api/plans/generate/[planId]", "fetch_plan", planErr);
+  }
 
   const { data: posts, error: postsErr } = await supabase
     .from("posts")
@@ -19,7 +22,9 @@ export async function GET(_req: NextRequest, ctx: { params: { planId: string } }
     .eq("plan_id", planId)
     .order("scheduled_at", { ascending: true });
 
-  if (postsErr) return NextResponse.json({ error: postsErr.message }, { status: 500 });
+  if (postsErr) {
+    return jsonError("api/plans/generate/[planId]", "fetch_posts", postsErr);
+  }
 
   const postIds = (posts ?? []).map((p: any) => p.id);
 
@@ -29,15 +34,9 @@ export async function GET(_req: NextRequest, ctx: { params: { planId: string } }
     .in("post_id", postIds)
     .order("scheduled_at", { ascending: true });
 
-  if (commentsErr) return NextResponse.json({ error: commentsErr.message }, { status: 500 });
+  if (commentsErr) {
+    return jsonError("api/plans/generate/[planId]", "fetch_comments", commentsErr);
+  }
 
-  const { data: quality, error: qualityErr } = await supabase
-    .from("quality_reports")
-    .select("*")
-    .eq("plan_id", planId)
-    .maybeSingle();
-
-  if (qualityErr) return NextResponse.json({ error: qualityErr.message }, { status: 500 });
-
-  return NextResponse.json({ plan, posts: posts ?? [], comments: comments ?? [], quality: quality ?? null });
+  return NextResponse.json({ plan, posts: posts ?? [], comments: comments ?? [] });
 }

@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { supabaseServer } from "@/lib/supabase/server";
+import { jsonError } from "@/lib/api/utils";
 
 type ApiError = { step: string; message: string; details?: unknown };
 
@@ -15,10 +16,7 @@ export async function POST() {
     .maybeSingle();
 
   if (existingCompanyError) {
-    return NextResponse.json(
-      { error: { step: "lookup_company", message: existingCompanyError.message } as ApiError },
-      { status: 500 }
-    );
+    return jsonError("api/seed/slideforge", "lookup_company", existingCompanyError);
   }
 
   let companyId: string;
@@ -39,10 +37,7 @@ export async function POST() {
       .single();
 
     if (companyError || !company) {
-      return NextResponse.json(
-        { error: { step: "insert_company", message: companyError?.message ?? "Unknown error" } as ApiError },
-        { status: 500 }
-      );
+      return jsonError("api/seed/slideforge", "insert_company", companyError);
     }
 
     companyId = company.id;
@@ -56,16 +51,7 @@ export async function POST() {
 
   const { error: subredditsError } = await supabase.from("subreddits").upsert(subreddits, {onConflict: "company_id,name"});
   if (subredditsError) {
-    return NextResponse.json(
-      {
-        error: {
-          step: "insert_subreddits",
-          message: subredditsError.message,
-          details: subredditsError,
-        } as ApiError,
-      },
-      { status: 500 }
-    );
+    return jsonError("api/seed/slideforge", "insert_subreddits", subredditsError);
   }
 
   // 2) Personas
@@ -83,16 +69,7 @@ export async function POST() {
 
   const { error: personasError } = await supabase.from("personas").upsert(personas, { onConflict: "company_id,username" });
   if (personasError) {
-    return NextResponse.json(
-      {
-        error: {
-          step: "insert_personas",
-          message: personasError.message,
-          details: personasError,
-        } as ApiError,
-      },
-      { status: 500 }
-    );
+    return jsonError("api/seed/slideforge", "insert_personas", personasError);
   }
 
   // 3) Keywords (match your actual table: keywords(id, phrase))
@@ -123,16 +100,7 @@ export async function POST() {
     );
 
   if (keywordsError) {
-    return NextResponse.json(
-      {
-        error: {
-          step: "upsert_keywords",
-          message: keywordsError.message,
-          details: keywordsError,
-        },
-      },
-      { status: 500 }
-    );
+    return jsonError("api/seed/slideforge", "upsert_keywords", keywordsError);
   }
 
 
@@ -147,16 +115,130 @@ export async function POST() {
     .upsert(companyKeywordRows, { onConflict: "company_id,keyword_id" });
 
   if (companyKeywordsError) {
-    return NextResponse.json(
+    return jsonError("api/seed/slideforge", "upsert_company_keywords", companyKeywordsError);
+  }
+
+  // 4) Insert (or reuse) a sample plan + posts + comments (with proper parent_comment_id mapping)
+  try {
+    const weekStartISO = new Date().toISOString().slice(0, 10);
+
+    // Reuse existing plan for this company + week if present (idempotent)
+    const { data: existingPlan, error: existingPlanError } = await supabase
+      .from("plans")
+      .select("id")
+      .eq("company_id", companyId)
+      .eq("week_start_date", weekStartISO)
+      .maybeSingle();
+
+    if (existingPlanError) return jsonError("api/seed/slideforge", "lookup_plan", existingPlanError);
+
+    let planId: string;
+
+    if (existingPlan) {
+      planId = existingPlan.id;
+    } else {
+      const { data: planRow, error: planError } = await supabase
+        .from("plans")
+        .insert({ company_id: companyId, week_start_date: weekStartISO })
+        .select("id")
+        .single();
+
+      if (planError || !planRow) return jsonError("api/seed/slideforge", "insert_plan", planError);
+      planId = planRow.id;
+    }
+
+    // Remove any existing sample posts/comments for this plan so re-running is clean.
+    const sampleTitles = ["Sample post A", "Sample post B"];
+
+    const { data: oldPosts, error: oldPostsErr } = await supabase
+      .from("posts")
+      .select("id")
+      .eq("plan_id", planId)
+      .in("title", sampleTitles as string[]);
+
+    if (oldPostsErr) return jsonError("api/seed/slideforge", "fetch_old_posts", oldPostsErr);
+
+    if (oldPosts && oldPosts.length) {
+      const oldPostIds = oldPosts.map((p: any) => p.id);
+
+      const { error: deleteCommentsErr } = await supabase.from("comments").delete().in("post_id", oldPostIds);
+      if (deleteCommentsErr) return jsonError("api/seed/slideforge", "delete_old_comments", deleteCommentsErr);
+
+      const { error: deletePostsErr } = await supabase.from("posts").delete().in("id", oldPostIds);
+      if (deletePostsErr) return jsonError("api/seed/slideforge", "delete_old_posts", deletePostsErr);
+    }
+
+    // insert two sample posts
+    const samplePosts = [
       {
-        error: {
-          step: "upsert_company_keywords",
-          message: companyKeywordsError.message,
-          details: companyKeywordsError,
-        },
+        plan_id: planId,
+        subreddit: "r/PowerPoint",
+        title: "Sample post A",
+        body: "Body A",
+        author_username: "riley_ops",
+        scheduled_at: new Date().toISOString(),
+        keyword_ids: [],
+        status: "planned",
       },
-      { status: 500 }
-    );
+      {
+        plan_id: planId,
+        subreddit: "r/Canva",
+        title: "Sample post B",
+        body: "Body B",
+        author_username: "jordan_consults",
+        scheduled_at: new Date(Date.now() + 1000 * 60).toISOString(),
+        keyword_ids: [],
+        status: "planned",
+      },
+    ];
+
+    const { data: insertedPosts, error: insertPostsError } = await supabase.from("posts").insert(samplePosts).select("id");
+    if (insertPostsError || !insertedPosts) return jsonError("api/seed/slideforge", "insert_posts", insertPostsError);
+
+    // Map temp index to real post id
+    const postIds = insertedPosts.map((r: any) => r.id);
+
+    // Insert comments for first post: root -> reply -> reply-to-reply (sequential so parent_comment_id can be set)
+    const commentsForPost0 = [
+      { comment_text: "Root comment", username: "priya_pm", scheduled_at: new Date().toISOString() },
+      { comment_text: "Reply to root", username: "jordan_consults", scheduled_at: new Date(Date.now() + 1000 * 60).toISOString(), parent_index: 0 },
+      { comment_text: "Reply to reply", username: "emily_econ", scheduled_at: new Date(Date.now() + 1000 * 120).toISOString(), parent_index: 1 },
+    ];
+
+    const insertedCommentIdsByIndex = new Map<number, string>();
+
+    for (let i = 0; i < commentsForPost0.length; i++) {
+      const c = commentsForPost0[i];
+      const parentIndex = (c as any).parent_index ?? null;
+      const parentId = parentIndex === null ? null : insertedCommentIdsByIndex.get(parentIndex) ?? null;
+
+      const { data: inserted, error } = await supabase
+        .from("comments")
+        .insert({
+          post_id: postIds[0],
+          parent_comment_id: parentId,
+          comment_text: c.comment_text,
+          username: c.username,
+          scheduled_at: c.scheduled_at,
+          status: "planned",
+        })
+        .select("id")
+        .single();
+
+      if (error) return jsonError("api/seed/slideforge", "insert_comments_sample", error);
+      if (inserted && inserted.id) insertedCommentIdsByIndex.set(i, inserted.id);
+    }
+
+    // Insert a single root comment for post 1
+    const { data: insertedC2, error: insertedC2Err } = await supabase
+      .from("comments")
+      .insert({ post_id: postIds[1], parent_comment_id: null, comment_text: "First comment on post B", username: "alex_sells", scheduled_at: new Date().toISOString(), status: "planned" })
+      .select("id")
+      .single();
+
+    if (insertedC2Err) return jsonError("api/seed/slideforge", "insert_comments_sample2", insertedC2Err);
+  } catch (err) {
+    return jsonError("api/seed/slideforge", "seed_sample_plan", err as any);
   }
 
 
