@@ -44,7 +44,7 @@ export async function POST(req: NextRequest) {
     // allow empty body
   }
 
-  // 1) Determine company
+  // 1. Determine company
   let company: Company | null = null;
 
   if (body.companyId) {
@@ -83,7 +83,7 @@ export async function POST(req: NextRequest) {
   const weekStart = body.weekStartISO ? new Date(body.weekStartISO) : startOfWeekISO(new Date());
   const weekStartISO = weekStart.toISOString().slice(0, 10); // YYYY-MM-DD
 
-  // 3) Fetch personas
+  // 3. Fetch personas
   const { data: personasData, error: personasError } = await supabase
     .from("personas")
     .select("*")
@@ -119,7 +119,7 @@ export async function POST(req: NextRequest) {
     );
   }
 
-  // 5) Fetch keywords via join table
+  // 5. Fetch keywords via join table
   const { data: joinRows, error: joinError } = await supabase
     .from(COMPANY_KEYWORDS_TABLE)
     .select("*")
@@ -155,7 +155,7 @@ export async function POST(req: NextRequest) {
     phrase: k.phrase,
   }));
 
-  // 6) Prevent duplicate plan for the same week + company (unique constraint exists)
+  // 6. Check for existing plan (idempotency)
   const { data: existingPlan, error: existingPlanError } = await supabase
     .from("plans")
     .select("id")
@@ -174,7 +174,7 @@ export async function POST(req: NextRequest) {
     );
   }
 
-  // 7) Create plan row
+  // 7. Create plan row
   const { data: planRow, error: planError } = await supabase
     .from("plans")
     .insert({
@@ -190,7 +190,7 @@ export async function POST(req: NextRequest) {
 
   const planId = planRow.id as string;
 
-  // 8) Pull recent usage to reduce repetition (last 3 plans)
+  // 8. Pull recent usage to reduce repetition (last 3 plans)
   const { data: recentPosts, error: recentPostsError } = await supabase
     .from("posts")
     .select("subreddit, keyword_ids, plans!inner(company_id)")
@@ -214,7 +214,7 @@ export async function POST(req: NextRequest) {
   recentKeywordIds = Array.from(new Set(recentKeywordIds)).slice(0, 30);
   recentSubreddits = Array.from(new Set(recentSubreddits)).slice(0, 10);
 
-  // 9) Generate week content
+  // 9. Generate week content
   const generated = generateWeekPlan({
     company: {
       id: company.id,
@@ -231,7 +231,7 @@ export async function POST(req: NextRequest) {
     weekStart,
   });
 
-  // 10) Insert posts
+  // 10. Insert posts
   const { data: insertedPosts, error: insertPostsError } = await supabase
     .from("posts")
     .insert(
@@ -267,7 +267,7 @@ export async function POST(req: NextRequest) {
     postIdByTempIndex.set(idx, row.id);
   });
 
-  // 11) Insert comments (needs parent mapping)
+  // 11. Insert comments (needs parent mapping)
   // We'll insert per-post in chronological order so parent ids exist.
   const allCommentsToInsert: any[] = [];
   for (let p = 0; p < generated.posts.length; p++) {
@@ -279,13 +279,6 @@ export async function POST(req: NextRequest) {
       .map((c, idx) => ({ ...c, local_index: idx }))
       .sort((a, b) => new Date(a.scheduled_at).getTime() - new Date(b.scheduled_at).getTime());
 
-    // parent mapping: generated.parent_temp_index refers to index in the global "comments" array
-    // Our generator uses "parent_temp_index" as absolute index in the comments list at creation time.
-    // We'll instead resolve parents within the inserted order by tracking inserted comment ids by global index.
-    // To keep things robust, we do a two-pass:
-    // 1) insert root-level comments first (parent null)
-    // 2) then insert replies
-    // BUT: simplest for take-home: insert sequentially and map as we go when parent is already inserted.
 
     const insertedCommentIdsByGlobalIndex = new Map<number, string>();
 

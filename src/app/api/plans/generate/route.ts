@@ -4,20 +4,10 @@ import { generateWeekPlan } from "@/lib/planner/generateWeekPlan";
 import { jsonError, jsonErrorMessage, logError } from "@/lib/api/utils";
 
 
-/**
- * POST /api/plans/generate
- *
- * Body (optional):
- * {
- *   companyId?: string
- *   weekStart?: string (YYYY-MM-DD)
- * }
- */
 export async function POST(req: NextRequest) {
   const supabase = supabaseServer();
 
   function logError(step: string, err: any) {
-    // compact, consistent server-side logging for easier debugging
     console.error(`[api/plans/generate] ${step}:`, err);
   }
 
@@ -32,9 +22,7 @@ export async function POST(req: NextRequest) {
     // body is optional
   }
 
-  /**
-   * 1. Resolve company
-   */
+  // 1. Determine companyId
   let companyId = body.companyId;
 
   if (!companyId) {
@@ -54,9 +42,7 @@ export async function POST(req: NextRequest) {
     companyId = company.id;
   }
 
-  /**
-   * 2. Resolve week start (Monday)
-   */
+  // 2. Determine week start date
   const weekStart =
     body.weekStart ??
     new Date(
@@ -67,9 +53,7 @@ export async function POST(req: NextRequest) {
       .toISOString()
       .slice(0, 10);
 
-  /**
-   * 3. Prevent duplicate plans for same week
-   */
+  // 3. Check for existing plan (idempotency)
   const { data: existingPlan } = await supabase
     .from("plans")
     .select("id")
@@ -84,9 +68,7 @@ export async function POST(req: NextRequest) {
     );
   }
 
-  /**
-   * 4. Fetch data required by generator and build inputs
-   */
+  // 4. Fetch data required by generator and build inputs
   const { data: companyData, error: companyErr } = await supabase
     .from("companies")
     .select("*")
@@ -162,9 +144,7 @@ export async function POST(req: NextRequest) {
     weekStart: new Date(weekStart),
   });
 
-  /**
-   * 5. Insert plan
-   */
+  //5. Instert Plan
   const { data: plan, error: planErr } = await supabase
     .from("plans")
     .insert({
@@ -178,9 +158,8 @@ export async function POST(req: NextRequest) {
     return jsonError("api/plans/generate", "insert_plan", planErr);
   }
 
-  /**
-   * 6. Insert posts
-   */
+  
+  //6 Insert posts
   const { data: posts, error: postsErr } = await supabase
     .from("posts")
     .insert(
@@ -195,10 +174,7 @@ export async function POST(req: NextRequest) {
     return jsonError("api/plans/generate", "insert_posts", postsErr);
   }
 
-  /**
-   * 7. Insert comments
-   */
-  // 7) Insert comments per-post, preserving parent->child relationships
+  // 7 Insert comments per-post, preserving parent->child relationships
   for (let p = 0; p < generated.posts.length; p++) {
     const realPostId = posts?.[p]?.id;
     if (!realPostId) continue;
@@ -242,9 +218,6 @@ export async function POST(req: NextRequest) {
     }
   }
 
-  /**
-   * 8. Success
-   */
   return NextResponse.json({
     planId: plan.id,
     weekStart,

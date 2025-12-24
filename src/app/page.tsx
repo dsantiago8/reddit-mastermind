@@ -15,16 +15,22 @@ type PlanDetails = {
   posts: Array<any>;
   comments: Array<any>;
 };
+/**
+ * Returns a new Date object set to the Monday of the week containing the given date.
+ * The returned date is at 00:00 local time on Monday.
+ */
 function startOfWeekMondayISO(date: Date) {
-  // Monday as week start
   const d = new Date(date);
-  const day = d.getDay(); // 0 Sun ... 6 Sat
+  const day = d.getDay(); // 0 = Sunday, 1 = Monday, ..., 6 = Saturday
   const diffToMonday = (day === 0 ? -6 : 1) - day;
   d.setDate(d.getDate() + diffToMonday);
   d.setHours(0, 0, 0, 0);
-  return d; // Date at Monday 00:00 local
+  return d;
 }
 
+/**
+ * Returns a new Date object that is the given number of days after the input date.
+ */
 function addDays(date: Date, days: number) {
   const d = new Date(date);
   d.setDate(d.getDate() + days);
@@ -45,10 +51,13 @@ export default function DashboardPage() {
   const thisWeekStart = useMemo(() => startOfWeekMondayISO(new Date()), []);
   const nextWeekStart = useMemo(() => addDays(thisWeekStart, 7), [thisWeekStart]);
 
+  /**
+   * Fetches the list of all plans from the backend and updates state.
+   * Displays an error if the request fails.
+   */
   async function fetchPlans() {
     setLoadingPlans(true);
     setError(null);
-
     try {
       const res = await fetch("/api/plans", { method: "GET" });
       if (!res.ok) {
@@ -68,10 +77,13 @@ export default function DashboardPage() {
     fetchPlans();
   }, []);
 
+  /**
+   * Fetches the details (posts and comments) for a specific plan by ID.
+   * Updates the selected plan and handles loading/error state.
+   */
   async function fetchPlanDetails(id: string) {
     setLoadingDetails(true);
     setError(null);
-    // mark the selected plan immediately so the UI filters by this id
     setSelectedPlanId(id);
     setPlanDetails(null);
     try {
@@ -90,98 +102,78 @@ export default function DashboardPage() {
     }
   }
 
+  /**
+   * Generates a plan for either the current or next available week.
+   * If 'this', generates for the current week. If 'next', finds the next week with no plan.
+   * Handles all loading and error state, and updates the UI accordingly.
+   */
   async function generatePlan(kind: "this" | "next") {
     setBusy(kind);
     setError(null);
-
-    // send date-only string (YYYY-MM-DD) to match backend expectations
     try {
       if (kind === "this") {
+        // Generate a plan for the current week
         const weekStart = thisWeekStart.toISOString().slice(0, 10);
         const res = await fetch("/api/plans/generate", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ weekStart }),
         });
-
         const text = await res.text().catch(() => "");
         let json: any = {};
         try {
           json = text ? JSON.parse(text) : {};
-        } catch {
-          // ignore parse error
-        }
-
+        } catch {}
         if (!res.ok) {
           const msg = json?.error?.message || json?.error || text || `Generate failed (${res.status})`;
           throw new Error(msg);
         }
-
         await fetchPlans();
         const planId = json?.planId as string | undefined;
         if (planId) await fetchPlanDetails(planId);
       } else {
-        // kind === "next" : find the next available week (no existing plan)
-        // NOTE: remove small fixed cap so users can keep generating; use a very large
-        // safety limit to avoid infinite loops in extreme edge cases.
+        // Generate a plan for the next available week (no existing plan)
         let candidate = new Date(nextWeekStart);
         let createdPlanId: string | null = null;
         let attempts = 0;
-        const SAFETY_LIMIT = 1000; // ~19 years worth of weeks
-
+        const SAFETY_LIMIT = 1000; // Prevent infinite loops
         while (true) {
           const weekStart = candidate.toISOString().slice(0, 10);
-
           const res = await fetch("/api/plans/generate", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ weekStart }),
           });
-
           const text = await res.text().catch(() => "");
           let json: any = {};
           try {
             json = text ? JSON.parse(text) : {};
-          } catch {
-            // ignore
-          }
-
+          } catch {}
           if (!res.ok) {
-            // Treat 409 as "already exists" (another plan exists for this week).
-            // Advance to the next week in that case instead of failing the whole loop.
+            // If a plan already exists for this week, try the next week
             if (res.status === 409) {
               candidate.setDate(candidate.getDate() + 7);
               attempts += 1;
               if (attempts >= SAFETY_LIMIT) break;
               continue;
             }
-
             const msg = json?.error?.message || json?.error || text || `Generate failed (${res.status})`;
             throw new Error(msg);
           }
-
-          // If the API created a new plan it should return a planId in the body.
-          // Older variants of the API returned { success, reused } — support either shape.
+          // If a new plan was created, break and use its ID
           if (json?.planId) {
             createdPlanId = json.planId;
             break;
           }
-
           if (json?.success === true && json?.reused === false && json?.planId) {
             createdPlanId = json.planId;
             break;
           }
-
-          // If we get here the API responded OK but didn't return a planId; advance week.
-          candidate.setDate(candidate.getDate() + 7);
-          attempts += 1;
-
-          // Otherwise advance one week and try again
+          // If no planId returned, try the next week
           candidate.setDate(candidate.getDate() + 7);
           attempts += 1;
           if (attempts >= SAFETY_LIMIT) break;
         }
-
         if (createdPlanId) {
           await fetchPlans();
           await fetchPlanDetails(createdPlanId);

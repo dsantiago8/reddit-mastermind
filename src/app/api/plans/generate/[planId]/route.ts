@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { supabaseServer } from "@/lib/supabase/server";
 import { jsonError, logError } from "@/lib/api/utils";
 
+// GET /api/plans/generate/[planId]
 export async function GET(_req: NextRequest, ctx: { params: Promise<{ planId: string }> }) {
   const supabase = supabaseServer();
   const { planId } = await ctx.params;

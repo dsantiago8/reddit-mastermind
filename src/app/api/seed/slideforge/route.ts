@@ -7,7 +7,7 @@ type ApiError = { step: string; message: string; details?: unknown };
 export async function POST() {
   const supabase = supabaseServer();
 
-  // 0) Make it safe to re-run:
+  // 0. Make it safe to re-run:
   // If Slideforge already exists, reuse it instead of inserting a new one.
   const { data: existingCompany, error: existingCompanyError } = await supabase
     .from("companies")
@@ -43,7 +43,7 @@ export async function POST() {
     companyId = company.id;
   }
 
-  // 1) Subreddits
+  // 1. Subreddits
   const subreddits = ["r/PowerPoint", "r/ClaudeAI", "r/Canva"].map((name) => ({
     company_id: companyId,
     name,
@@ -54,7 +54,7 @@ export async function POST() {
     return jsonError("api/seed/slideforge", "insert_subreddits", subredditsError);
   }
 
-  // 2) Personas
+  // 2. Personas
   const personas = [
     { username: "riley_ops", bio: "Head of operations at a fast-growing SaaS startup." },
     { username: "jordan_consults", bio: "Independent consultant working with early-stage founders." },
@@ -64,7 +64,7 @@ export async function POST() {
   ].map((p) => ({
     company_id: companyId,
     username: p.username,
-    bio: p.bio, // NOTE: must match your schema column name (your screenshot shows 'bio', not 'info')
+    bio: p.bio, 
   }));
 
   const { error: personasError } = await supabase.from("personas").upsert(personas, { onConflict: "company_id,username" });
@@ -72,7 +72,7 @@ export async function POST() {
     return jsonError("api/seed/slideforge", "insert_personas", personasError);
   }
 
-  // 3) Keywords (match your actual table: keywords(id, phrase))
+  // 3) Keywords
   const keywords = [
     ["K1", "best ai presentation maker"],
     ["K2", "ai slide deck tool"],
@@ -104,7 +104,7 @@ export async function POST() {
   }
 
 
-  // 3b) Link keywords to company via join table
+  // Link keywords to company via join table
   const companyKeywordRows = keywords.map(([keyword_id]) => ({
     company_id: companyId,
     keyword_id,
@@ -118,11 +118,11 @@ export async function POST() {
     return jsonError("api/seed/slideforge", "upsert_company_keywords", companyKeywordsError);
   }
 
-  // 4) Insert (or reuse) a sample plan + posts + comments (with proper parent_comment_id mapping)
+  // 4. Insert (or reuse) a sample plan + posts + comments (with proper parent_comment_id mapping)
   try {
     const weekStartISO = new Date().toISOString().slice(0, 10);
 
-    // Reuse existing plan for this company + week if present (idempotent)
+    // 4.1. Reuse existing plan for this company + week if present (idempotent)
     const { data: existingPlan, error: existingPlanError } = await supabase
       .from("plans")
       .select("id")
